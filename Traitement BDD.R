@@ -118,7 +118,7 @@ n_H[3] <- n_3
 n_H <- round(n_H)
 
 # sample
-stsrswor = strata(MU284,"strate",size=c(n_H[1],n_H[2],n_H[3]),method="srswor")
+stsrswor = strata(MU284,"strate",size=c(n_H[2],n_H[1],n_H[3]),method="srswor")
 stsrswor_data = getdata(MU284,stsrswor)
 
 #y_ht
@@ -144,10 +144,34 @@ ech.stsi=svydesign(id=~LABEL,strata=~strate,weights=poids_stsi,
                    data=stsrswor_data)
 
 res_R <- svytotal(~P85_R, ech.stsi)
-res_R_quantile <- svytotal(~P85_R_quantile, ech.stsi)
+res_R_mean <- svymean(~P85_R, ech.stsi)
+res_R_quantile_mean <- svymean(~P85_R_quantile, ech.stsi)
 
 #R - µ/ n-1 = E(max(Y-R,0))
+# On estime l'espérance puis on résoud l'équation : H(R) = R - µ/ n-1 - E(max(Y-R,0)) = 0
+mu_pop <- mean(MU284$P85)
+n <- length(stsrswor_data) 
+H_R <- function(R, mu, n, sample){
+  terme1 <- (R - mu) / (n - 1)
+  terme2 <- sum(pmax(sample - R, 0))/n
+  return(terme1 - terme2)
+}
+R_esp_max <- uniroot(f = H_R, interval = c(min(MU284$P85), max(MU284$P85)),
+                     mu = mu_pop, n = n, sample = stsrswor_data$P85)$root
 
+stsrswor_data$P85_R_esp_max <- min(stsrswor_data$P85, R_esp_max)
+
+ech.stsi=svydesign(id=~LABEL,strata=~strate,weights=poids_stsi,
+                   fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])),
+                   data=stsrswor_data)
+
+res_R_esp_max <- svytotal(~P85_R_esp_max, ech.stsi)
+#pas optimal (résultat de l'article)
+res_R_esp_max_mean <- svymean(~P85_R_esp_max, ech.stsi)
 
 #R = 2ème plus rand y_i
-R_y_i1 <- 
+#dans l'échantillon
+P85_ordered <- sort(unique(stsrswor_data$P85),decreasing = TRUE)
+P85_n <- P85_ordered[1]
+P85_n1 <- P85_ordered[2]
+y_i1 <- mean(stsrswor_data$P85) - (P85_n - P85_n1) / n

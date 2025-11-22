@@ -1,0 +1,278 @@
+---
+title: "Code_Beaumont_Rivest"
+author: "Loan Rottier"
+date: "2025-11-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Import des librairies
+
+```{r}
+library(readr) 
+library(tidyverse) 
+library(ggplot2) 
+library(sampling) 
+library(survey)
+```
+
+### MU284
+
+```{r}
+data(MU284) 
+?MU284
+```
+
+Y = Population en 1985
+
+X = Population en 1975
+
+Création de strates : petites / Moyennes / Grandes villes
+
+Stratum jumpers : Plus grande croissance que prévue, au contraire, fort déclin de la ville =\> Changement de strates
+
+```{r}
+ggplot(MU284, aes(x = P85)) + 
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") + 
+  labs(title = paste("Histogramme de la population en 1985"), x = "Population", y = "Fréquence") + 
+  theme_minimal()
+```
+
+```{r}
+ggplot(MU284, aes(x = P85)) + 
+  geom_density() + 
+  labs(title = paste("Densité de la population en 1985"), x = "Population", y = "Fréquence") + 
+  theme_minimal()
+```
+
+```{r}
+ggplot(MU284, aes(x = P75)) + 
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") + 
+  labs(title = paste("Histogramme de la population en 1975"), x = "Population", y = "Fréquence") + 
+  theme_minimal()
+```
+
+```{r}
+ggplot(MU284, aes(x = P75, y = P85)) + 
+  geom_point(color = "steelblue", alpha = 0.7) + 
+  geom_smooth(method = "lm", se = TRUE, color = "red") + 
+  labs( title = "Scatter plot entre P75 et P85", x = "Population en 1975 (P75)", y = "Population en 1985 (P85)" ) + 
+  theme_minimal()
+```
+
+```{r}
+boxplot(MU284$P85, MU284$P75)
+```
+
+### Identification des outliers
+
+```{r}
+Q1 <- quantile(MU284$P85, 0.25)
+Q3  <- quantile(MU284$P85, 0.75) 
+IQR <- Q3 - Q1
+lower <- Q1 - 1.5 * IQR 
+upper <- Q3 + 1.5 * IQR
+outliers <- MU284$LABEL[MU284$P85 < lower | MU284$P85 > upper]
+MU284$outlier <- ifelse(seq_len(nrow(MU284)) %in% outliers, 1, 0)
+```
+
+```{r}
+ggplot(MU284, aes(x = P75, y = P85, color = factor(outlier))) + 
+  geom_point() + geom_smooth(method = "lm", se = TRUE, color = "lightgreen") + 
+  labs( title = "Scatter plot entre P75 et P85", x = "Population en 1975 (P75)", y = "Population en 1985 (P85)" ) + 
+  theme_minimal()
+```
+
+### Création des strates
+
+#### Par quantiles
+
+```{r}
+MU284$strate <- cut(MU284$P75, breaks = quantile(MU284$P75, probs = c(0, 1/2, 28.5/30, 1)), include.lowest = TRUE, labels = c("basse", "moyenne", "haute"))
+MU284 <- MU284 %>% mutate(strate_id = case_when(
+  strate == "basse" ~ 1,
+  strate == "moyenne" ~ 2,
+  strate == "haute" ~ 3 ))
+```
+
+```{r}
+ggplot(MU284, aes(x = P75, y = P85, color = factor(strate))) + 
+  geom_point() + 
+  labs( title = "Scatter plot entre P75 et P85", x = "Population en 1975 (P75)", y = "Population en 1985 (P85)" ) + 
+  theme_minimal()
+```
+
+## Population
+
+```{r}
+P85_pop <- sum(MU284$P85)
+P75_pop <- sum(MU284$P75)
+P85_pop_mean <- mean(MU284$P85)
+P75_pop_mean <- mean(MU284$P75)
+```
+
+## Sampling design
+
+$n=70$
+
+#### SRSWOR
+
+#### STSRSWOR
+
+Sampling design: all of the big cities ; some of the middle and small size
+
+```{r}
+N_H <- table(MU284$strate)
+# calcul n_h
+n <- 70 #choix de n
+table(MU284$strate) 
+std <- c() 
+for (i in 1:3){ 
+  std[i] <- sqrt(var(MU284$P85[MU284$strate_id == i])) 
+  } 
+tab <- table(MU284$strate)*std 
+sum_NL <- sum(tab) 
+n_H <- n * tab / sum_NL 
+round(n_H) #pas ok car n_3 = 34 > N_3 = 15
+```
+
+On recommence en fixant $n_3$.
+
+```{r}
+n_3 <- table(MU284$strate)['haute'] 
+n_12 <- n - n_3
+tab <- table(MU284$strate)[1:2] * std[1:2] 
+sum_NL <- sum(tab) 
+n_H <- n_12 * tab / sum_NL 
+n_H['haute'] <- n_3 
+n_H <- round(n_H)
+n_H
+```
+
+```{r}
+n_H_vec <- as.numeric(n_H)
+names(n_H_vec) <- names(n_H)
+```
+
+```{r}
+MU284 <- MU284 %>% select(-strate_id)
+```
+
+## Sample
+
+#### SRSWOR
+
+```{r}
+srswor_method <- srswor(70,284)
+```
+
+#### STSRSWOR
+
+```{r}
+sizes <- c("basse" = 11, "moyenne" = 44, "haute" = 15)
+stsrswor = strata(MU284,"strate",size=sizes,method="srswor")
+stsrswor_data = getdata(MU284,stsrswor)
+```
+
+```{r}
+poids_stsi=c(rep(rep(N_H[2]/n_H[2],n_H[2]),N_H[1]/n_H[1],n_H[1]),rep(N_H[3]/n_H[3],n_H[3])) 
+ech.stsi=svydesign(id=LABEL,strata=strate,weights=poids_stsi, fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])), data=stsrswor_data) 
+res=svytotal(~P85,ech.stsi) 
+res_mean = svymean(~P85, ech.stsi)
+```
+
+#Warning mais je sais pas d'où ça vient
+
+### Mean estimation in the sample
+
+#### Winsorization
+
+R aléatoire
+
+```{r}
+R = 200 
+stsrswor_data$P85_R <- min(stsrswor_data$P_85, R)
+```
+
+R quantile 0.90
+
+```{r}
+R_quantile = quantile(stsrswor_data$P85, probs = 0.90)
+stsrswor_data$P85_R_quantile <- min(stsrswor_data$P_85, R_quantile)
+```
+
+R solution de \$\\frac{R - \\mu}{n-1} = \\mathbb{E}\_F(max(Y-R,0))\$
+
+On estime l'espérance puis on résoud $H(R) = \frac{R - \mu}{n-1} - {1\over n} \sum_{i=1}^n max(Y-R,0)) = 0$
+
+```{r}
+mu_pop <- mean(MU284$P85)
+n <- length(stsrswor_data)
+H_R <- function(R, mu, n, sample){
+  terme1 <- (R - mu) / (n - 1)
+  terme2 <- sum(pmax(sample - R, 0))/n
+  return(terme1 - terme2)
+}
+R_esp_max <- uniroot(f = H_R, interval = c(min(MU284$P85), max(MU284$P85)),
+                     mu = mu_pop, n = n, sample = stsrswor_data$P85)$root
+stsrswor_data$P85_R_esp_max <- min(stsrswor_data$P85, R_esp_max)
+```
+
+Calcul des estimateurs
+
+```{r}
+ech.srswor <- svydesign(id=~LABEL, weights=rep(284/n,n),fpc=rep(554,n),
+data=MU284)
+ech.stsi=svydesign(id=LABEL,strata=strate,weights=poids_stsi, fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])), data=stsrswor_data)
+```
+
+SRSWOR
+
+```{r}
+
+res_R_mean <- svymean(~P85_R, ech.srswor) 
+res_R_quantile_mean <- svymean(~P85_R_quantile, ech.srswor)
+res_R_esp_max_mean <- svymean(~P85_R_esp_max, ech.srswor)
+```
+
+STSRSWOR
+
+```{r}
+res_R_mean <- svymean(~P85_R, ech.stsi) 
+res_R_quantile_mean <- svymean(~P85_R_quantile, ech.stsi)
+res_R_esp_max_mean <- svymean(~P85_R_esp_max, ech.stsi)
+```
+
+```{r}
+#marche si la distribution a une certaine forme, test pour le vérifier mais je n'ai pas trouver comment le réaliser
+P85_ordered <- sort(unique(stsrswor_data$P85),decreasing = TRUE)
+P85_n <- P85_ordered[1]
+P85_n1 <- P85_ordered[2]
+y_i1 <- mean(stsrswor_data$P85) - (P85_n - P85_n1) / n
+```
+
+Pour les totaux
+
+```{r}
+res_R <- svytotal(~P85_R, ech.stsi) 
+res_R_esp_max <- svytotal(~P85_R_esp_max, ech.stsi)
+```
+
+Pas optimal (résultat de l'article)
+
+### Total estimation
+
+Estimation of the totals
+
+```{r}
+res_total <- svytotal(~P85, ech.stsi)
+res_total_N <- svymean(~P85, ech.stsi) * nrow(MU284)
+```
+
+```{r}
+f <- nrow() / N 
+res_total_R <- res_total - 
+```
