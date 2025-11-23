@@ -1,0 +1,335 @@
+---
+title: "Estimations_robsurvey"
+author: "Loan Rottier"
+date: "2025-11-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readr) 
+library(tidyverse) 
+library(ggplot2) 
+library(sampling) 
+library(survey)
+library(robsurvey)
+```
+
+```{r}
+data(MU284)
+```
+
+```{r}
+Q1 <- quantile(MU284$P85, 0.25)
+Q3  <- quantile(MU284$P85, 0.75) 
+IQR <- Q3 - Q1
+lower <- Q1 - 1.5 * IQR 
+upper <- Q3 + 1.5 * IQR
+outliers <- MU284$LABEL[MU284$P85 < lower | MU284$P85 > upper]
+MU284$outlier <- ifelse(seq_len(nrow(MU284)) %in% outliers, 1, 0)
+```
+
+## Stratum
+
+```{r}
+MU284$strate <- cut(MU284$P75, breaks = quantile(MU284$P75, probs = c(0, 1/2, 28.5/30, 1)), include.lowest = TRUE, labels = c("basse", "moyenne", "haute"))
+MU284 <- MU284 %>% mutate(strate_id = case_when(
+  strate == "basse" ~ 1,
+  strate == "moyenne" ~ 2,
+  strate == "haute" ~ 3 ))
+```
+
+```{r}
+ggplot(MU284, aes(x = P75, y = P85, color = factor(strate))) + 
+  geom_point() + 
+  labs( title = "Scatter plot entre P75 et P85", x = "Population en 1975 (P75)", y = "Population en 1985 (P85)" ) + 
+  theme_minimal()
+```
+
+## Sample
+
+```{r}
+N_H <- table(MU284$strate)
+# calcul n_h
+n <- 70 #choix de n
+table(MU284$strate) 
+std <- c() 
+for (i in 1:3){ 
+  std[i] <- sqrt(var(MU284$P85[MU284$strate_id == i])) 
+  } 
+tab <- table(MU284$strate)*std 
+sum_NL <- sum(tab) 
+n_H <- n * tab / sum_NL 
+round(n_H) #pas ok car n_3 = 34 > N_3 = 15
+```
+
+On recommence en fixant $n_3$.
+
+```{r}
+n_3 <- table(MU284$strate)['haute'] 
+n_12 <- n - n_3
+tab <- table(MU284$strate)[1:2] * std[1:2] 
+sum_NL <- sum(tab) 
+n_H <- n_12 * tab / sum_NL 
+n_H['haute'] <- n_3 
+n_H <- round(n_H)
+n_H
+```
+
+```{r}
+MU284_sorted <- MU284 %>% arrange(strate)
+sizes <- c(11, 44, 15)
+stsrswor = strata(MU284_sorted,"strate",size=sizes,method="srswor")
+stsrswor_data = getdata(MU284,stsrswor)
+```
+
+```{r}
+#parce que la ligne d'au-dessus ne marche pas
+ech1 <- sample(1:nrow(MU284[MU284$strate=="basse",]), size = n_H["basse"])
+ech2 <- sample(1:nrow(MU284[MU284$strate=="moyenne",]), size = n_H["moyenne"])
+ech3 <- sample(1:nrow(MU284[MU284$strate=="haute",]), size = n_H["haute"])
+sample1 <- MU284[MU284$strate=="basse",]
+sample1 <- sample1[ech1,]
+sample2 <- MU284[MU284$strate=="moyenne",]
+sample2 <- sample2[ech2,]
+sample3 <- MU284[MU284$strate=="haute",]
+sample3 <- sample3[ech3,]
+stsrswor_data <- rbind(sample1, sample2, sample3) 
+```
+
+```{r}
+poids_stsi=c(rep(N_H[1]/n_H[1],n_H[1]),rep(N_H[2]/n_H[2],n_H[2]),rep(N_H[3]/n_H[3],n_H[3])) 
+ech.stsi=svydesign(id=~LABEL,strata=~strate,weights=poids_stsi, fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])), data=stsrswor_data) 
+```
+
+## Mean
+
+True mean
+
+```{r}
+P85_mean <- mean(MU284$P85)
+P85_mean
+```
+
+### Winsorization
+
+Winsorization with lower and upper bounds : no winsorization for the lower bound and 0.9 percentile for the lower bound
+
+#### Documentation
+
+Characteristic. Population mean or total. Let μ denote the estimated winsorized population mean; then, the estimated winsorized total is given by \$ \\hat{N} \\mu \$ with \$\\hat{N} = \\sum w_i\$ , where summation is over all observations in the sample.
+
+Modes of winsorization. The amount of winsorization can be specified in relative or absolute terms:
+
+-   Relative: By specifying LB and UB, the method winsorizes the LB · 100% of the smallest observations and the (1 - UB) · 100% of the largest observations from the data.
+
+-   Absolute: By specifying argument k in the functions with the "infix" *k* in their name (e.g., svymean_k_winsorized), the largest k observations are winsorized, 0 \< k \< n, where n denotes the sample size. E.g., k = 2 implies that the largest and the second largest observation are winsorized. Variance estimation. Large-sample approximation based on the influence function; see Huber and Ronchetti (2009, Chap. 3.3) and Shao (1994). Two estimators are available:
+
+    -   simple_var = FALSE Variance estimator of the winsorized mean/ total. The estimator de- pends on the estimated probability density function evaluated at the winsorization thresh- olds, which can be – depending on the context – numerically unstable. As a remedy, a simplified variance estimator is available by setting simple_var = TRUE.
+
+    -   simple_var = TRUE Variance is approximated using the variance estimator of the trimmed mean/ total.
+
+```{r}
+svymean_winsorized(~P85, ech.stsi, LB = 0, UB = 0.90)
+```
+
+Winsorization by the k bigger values
+
+```{r}
+svymean_k_winsorized(~P85, ech.stsi, k = 5)
+```
+
+Try different values of k
+
+```{r}
+means_k_winso <- numeric(15)
+for (k in 1:15){
+  means_k_winso[k] <- coef(svymean_k_winsorized(~P85, ech.stsi, k = k))
+}
+plot(means_k_winso, ylim = c(23,30), xlab = "Value of k", ylab = "mean")
+abline(h = P85_mean, col = "red", lwd = 2)
+```
+
+```{r}
+means_k_winso <- numeric(15)
+for (k in 1:15){
+  means_k_winso[k] <- SE(svymean_k_winsorized(~P85, ech.stsi, k = k))
+}
+plot(means_k_winso, xlab = "Value of k", ylab = "SE of the estimated means")
+abline(h = P85_mean, col = "red", lwd = 2)
+```
+
+Optimal R
+
+R solution de \$\\frac{R - \\mu}{n-1} = \\mathbb{E}\_F(max(Y-R,0))\$
+
+On estime l'espérance puis on résoud \$H(R) = \\frac{R - \\mu}{n-1} - {1\\over n} \\sum\_{i=1}\^n max(Y-R,0)) = 0\$
+
+```{r}
+mu_pop <- mean(MU284$P85)
+n <- length(stsrswor_data)
+H_R <- function(R, mu, n, sample){
+  terme1 <- (R - mu) / (n - 1)
+  terme2 <- sum(pmax(sample - R, 0))/n
+  return(terme1 - terme2)
+}
+R_esp_max <- uniroot(f = H_R, interval = c(min(MU284$P85), max(MU284$P85)),
+                     mu = mu_pop, n = n, sample = stsrswor_data$P85)$root
+R_esp_max
+```
+
+Trouver R
+
+```{r}
+MU284 %>% arrange(desc(P85)) %>% select(P85)
+```
+
+2 sont supérieurs à R donc k = 2
+
+### Trimmed
+
+#### Documentation
+
+Characteristic. Population mean or total. Let μ denote the estimated trimmed population mean; then, the estimated trimmed total is given by \$\\hat{N} \\mu\$ with \$\\hat{N} = \\sum w_i\$, where summation is over all observations in the sample.
+
+Trimming. The methods trims the LB · 100% of the smallest observations and the (1 - UB) · 100% of the largest observations from the data. Variance estimation. Large-sample approximation based on the influence function; see Huber and Ronchetti (2009, Chap. 3.3) and Shao (1994).
+
+#### Functions
+
+```{r}
+svymean_trimmed(~P85, ech.stsi, LB = 0, UB = 0.90)
+```
+
+### Other estimators
+
+Weighted Huber and Tukey M-estimator of the population mean and total (robust Horvitz-Thompson estimator)
+
+```{r}
+mean_huber <- svymean_huber(~P85, ech.stsi, k = 350)
+mean_huber
+```
+
+```{r}
+svymean_tukey(~P85, ech.stsi, k = 350)
+```
+
+Essayer les autres paramètres :
+
+-   k [double] robustness tuning constant (0 \< k ≤ ∞).
+
+-   type [character] type of method: "rwm" or "rht".
+
+-   asym [logical] if TRUE, an asymmetric Huber psi-function is used (default: FALSE).
+
+```{r}
+svymean_tukey(~P85, ech.stsi, k = 350, type = "rht")
+```
+
+```{r}
+svymean_tukey(~P85, ech.stsi, k = 3, asym =  TRUE) #asym change rien ?
+```
+
+Dalen, see weighted for more details
+
+```{r}
+svymean_dalen(~P85, ech.stsi, censoring = 350)
+```
+
+```{r}
+svymean_dalen(~P85, ech.stsi, censoring = 350, type = 'Z3')
+```
+
+Ratio
+
+-   object an object of class [ratio], e.g., result of the Huber ratio M-estimator svyratio_huber.
+
+-   total [numeric] vector of population totals of the auxiliary variables.
+
+-   N [numeric] population size (see also N_unknown.
+
+```{r}
+svymean_ratio(mean_huber,MU284$P75, 284)
+```
+
+```{r}
+coef(mean_huber)
+```
+
+## Total
+
+True total
+
+```{r}
+P85_total <- sum(MU284$P85)
+```
+
+### Winsorization
+
+```{r}
+svytotal_winsorized(~P85, ech.stsi, LB = 0, UB = 0.90)
+```
+
+```{r}
+svytotal_k_winsorized(~P85, ech.stsi, k = 2)
+```
+
+```{r}
+totals_k_winso <- numeric(15)
+for (k in 1:15){
+  totals_k_winso[k] <- coef(svytotal_k_winsorized(~P85, ech.stsi, k = k))
+}
+plot(totals_k_winso, ylim = c(6600,8400), xlab = "Value of k", ylab = "SE of the total estimation")
+abline(h = P85_total, col = "red", lwd = 2)
+```
+
+```{r}
+totals_k_winso <- numeric(15)
+for (k in 1:15){
+  totals_k_winso[k] <- SE(svytotal_k_winsorized(~P85, ech.stsi, k = k))
+}
+plot(totals_k_winso, xlab = "Value of k", ylab = "total")
+abline(h = P85_total, col = "red", lwd = 2)
+```
+
+### Trimmed
+
+```{r}
+svytotal_trimmed(~P85, ech.stsi, LB = 0, UB = 0.90)
+```
+
+## Weighted
+
+### Mean
+
+```{r}
+weighted_mean_winsorized(stsrswor_data$P85, poids_stsi, LB = 0, UB = 0.90)
+```
+
+```{r}
+weighted_mean_k_winsorized(stsrswor_data$P85, poids_stsi, k = 2)
+```
+
+```{r}
+weighted_mean_trimmed(stsrswor_data$P85, poids_stsi, LB = 0, UB = 0.90)
+```
+
+### Totals
+
+```{r}
+weighted_total_winsorized(stsrswor_data$P85, poids_stsi, LB = 0, UB = 0.90)
+```
+
+```{r}
+weighted_total_k_winsorized(stsrswor_data$P85, poids_stsi, k = 2)
+```
+
+```{r}
+weighted_total_trimmed(stsrswor_data$P85, poids_stsi, LB = 0, UB = 0.90)
+```
+
+## Stratum jumpers
+
+Create a observation in not the right strata : big cities in small or medium strata
