@@ -47,12 +47,14 @@ Q1  <- quantile(MU284$P85, 0.25)
 Q3  <- quantile(MU284$P85, 0.75)
 IQR <- Q3 - Q1
 
+# computer upper and lower bound
 lower <- Q1 - 1.5 * IQR
 upper <- Q3 + 1.5 * IQR
 
 outliers <- MU284$LABEL[MU284$P85 < lower | MU284$P85 > upper]
 MU284$outlier <- ifelse(seq_len(nrow(MU284)) %in% outliers, 1, 0)
 
+#we can see that Y and X are highly positvely correlated 
 ggplot(MU284, aes(x = P75, y = P85, color = factor(outlier))) +
   geom_point() +
   geom_smooth(method = "lm", se = TRUE, color = "lightgreen") +
@@ -91,7 +93,8 @@ ggplot(MU284, aes(x = P75, y = P85, color = factor(strate))) +
 # Population
 P85_pop <- sum(MU284$P85)
 P75_pop <- sum(MU284$P75)
-
+P85_pop
+P75_pop
 #Sample
 #Sampling design: all of the big cities
 #some of the middle and small size
@@ -99,24 +102,26 @@ N_H <- table(MU284$strate)
 # calcul n_h
 n <- 70 #choix de n
 table(MU284$strate)
+
+#compute n_h with Neyman allocation 
 std <- c()
 for (i in 1:3){
   std[i] <- sqrt(var(MU284$P85[MU284$strate_id == i]))
 }
-tab <- table(MU284$strate)*std
-sum_NL <- sum(tab)
-n_H <- n * tab / sum_NL
-round(n_H) #pas ok car n_3 = 26 > N_3 = 15
+
+
 
 n_3 <- table(MU284$strate)['haute']
 n_12 <- n - n_3
 
+#standart deviation only for strat 1 and 2 since n3 >N3
 tab <- table(MU284$strate)[1:2]*std[1:2]
 sum_NL <- sum(tab)
 n_H <- n_12 * tab / sum_NL
 n_H[3] <- n_3 
 n_H <- round(n_H)
-
+n_H
+n_H[1]
 # sample
 stsrswor = strata(MU284,"strate",size=c(n_H[1],n_H[2],n_H[3]),method="srswor")
 stsrswor_data = getdata(MU284,stsrswor)
