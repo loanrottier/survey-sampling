@@ -51,6 +51,24 @@ ggplot(MU284, aes(x = P75, y = P85, color = factor(strate))) +
 
 ## Sample
 
+#### SRSWOR
+
+```{r}
+set.seed(1)
+N <- nrow(MU284)
+n <- 70
+
+ech_index <- srswor(n, N)
+echantillon_srswor <- MU284[ech_index == 1, ]
+
+#create a vector of size n with weight N/n for all element
+poids_srswor <- rep(N/n, n)
+#create the survey design with weight 
+ech.srswor <- svydesign(id=~LABEL, weights=poids_srswor, fpc=rep(N, n), data=echantillon_srswor)
+```
+
+#### STSRSWOR
+
 ```{r}
 N_H <- table(MU284$strate)
 # calcul n_h
@@ -203,8 +221,6 @@ Trimming. The methods trims the LB · 100% of the smallest observations and the 
 svymean_trimmed(~P85, ech.stsi, LB = 0, UB = 0.90)
 ```
 
-### Other estimators
-
 Weighted Huber and Tukey M-estimator of the population mean and total (robust Horvitz-Thompson estimator)
 
 ```{r}
@@ -330,6 +346,237 @@ weighted_total_k_winsorized(stsrswor_data$P85, poids_stsi, k = 2)
 weighted_total_trimmed(stsrswor_data$P85, poids_stsi, LB = 0, UB = 0.90)
 ```
 
+## Auxiliary information
+
+$T_X$ known
+
+```{r}
+sum(MU284$P75)
+```
+
+Sampling weights computable : $d_i = 1 / \pi_i$
+
+SRSWOR : $\pi_i = {n \over N}$ then $d_i = {N \over n}$. Dans notre cas : \$d_i = {284 \\over 70}\$
+
+```{r}
+sum(echantillon_srswor$P75) * 284/70
+#cela doit correspondre à T_X
+```
+
+```{r}
+set.seed(12)
+nsimu <- 1000  
+n <- 70
+N <- 284
+sum_x <- numeric(nsimu)
+calibrated_x <- numeric(nsimu)
+estimation_y <- numeric(nsimu)
+estimation_y_weighted <- numeric(nsimu)
+
+for (i in 1:nsimu) {
+  
+  ech_index <- srswor(n, N)
+  sample_si <- MU284[ech_index == 1, ]
+  
+  sample_si$weight_si <- rep(N/n, n)
+  ech.si <- svydesign(id=~LABEL, weights=~weight_si, fpc=rep(N, n), data=sample_si)
+  
+  #calibrated estimator on x
+  sum_x[i] <- sum(sample_si$P75) * N / n
+  calibrated_x[i]<- svytotal(~P75, ech.si)
+  
+  #estimation of y
+  estimation_y[i] <- svytotal(~P85, ech.si)
+  estimation_y_weighted[i] <- weighted_total(sample_si$P85, sample_si$weight_si)
+  
+  
+}
+
+print(sum(MU284$P75))
+print(mean(sum_x))
+print(mean(calibrated_x)) #iso to the previous line
+#the estimation is ok then we can use the same weight to compute the T_y
+print(sum(MU284$P85))
+print(mean(estimation_y))
+print(mean(estimation_y_weighted))
+#good estimator
+```
+
+Then estimators = calibrated total : $\sum_{i \in s} w_i y_i$ and $w_i$ such that $\sum_{i \in s} w_i x_i = T_X$
+
+--\> unbiased but can be inefficient if the model fails (model : $\mathbb{E}_m(y_i | X) = x'_i \beta$ and $\mathrm{Var}_m(y_i|X) \propto \nu_i = x'_i \lambda, i \in U$), especially because of outliers (missclassification bc of outliers)
+
+Regarder les résidus (y - xB) pour voir s'ils ont une forme, ce qui pourrait expliquer la malclassification du modèle
+
+```{r}
+#model 
+model <- lm(P85 ~ P75, data = sample_si)
+beta <- coef(model)['P75']
+plot(model$residuals)
+```
+
+```{r}
+index <- sample(sample3$LABEL, 4)
+sample3_outliers <- sample3
+sample3_outliers[sample3_outliers$LABEL %in% index,]$P75 <- sample3_outliers[sample3_outliers$LABEL %in% index,]$P75 + 1000
+```
+
+```{r}
+#seulement sur la strate des grandes villes
+model <- lm(P85 ~ P75, data = sample3)
+beta <- coef(model)['P75']
+plot(model$residuals)
+```
+
+### Robust M-Estimator
+
+Weighted Huber and Tukey M-estimator of the population mean and total (robust Horvitz-Thompson estimator)
+
+```{r}
+mean_huber <- svymean_huber(~P85, ech.stsi, k = 350)
+summary(mean_huber)
+```
+
+```{r}
+svymean_tukey(~P85, ech.stsi, k = 350)
+```
+
+Essayer les autres paramètres :
+
+-   k [double] robustness tuning constant (0 \< k ≤ ∞).
+
+-   type [character] type of method: "rwm" or "rht".
+
+-   asym [logical] if TRUE, an asymmetric Huber psi-function is used (default: FALSE).
+
+```{r}
+svymean_tukey(~P85, ech.stsi, k = 350, type = "rht")
+```
+
+```{r}
+svymean_tukey(~P85, ech.stsi, k = 3, asym =  TRUE) #asym change rien ?
+```
+
+Dalen, see weighted for more details
+
+```{r}
+svymean_dalen(~P85, ech.stsi, censoring = 350)
+```
+
+```{r}
+svymean_dalen(~P85, ech.stsi, censoring = 350, type = 'Z3')
+```
+
+Ratio
+
+-   object an object of class [ratio], e.g., result of the Huber ratio M-estimator svyratio_huber.
+
+-   total [numeric] vector of population totals of the auxiliary variables.
+
+-   N [numeric] population size (see also N_unknown.
+
+```{r}
+svymean_ratio(mean_huber,MU284$P75, 284)
+```
+
+```{r}
+coef(mean_huber)
+```
+
+Decomposition de $\hat{T}_y^C$ permet de montrer que $\hat{T}_y^C - T_y = - \sum_{i \in U - s} (y_i - x'_i - \hat{\beta}^R) + \sum_{i \in s} u_i (y_i - x'_i \hat{\beta}^R) / \sqrt{\nu_i}$
+
+= sampling error : montre que les résidus extrêmes (positif ou négatif) impactent la sampling error
+
+et large $u_i$ + large standardized residual $(y_i - x'_i \hat{\beta}^R) / \sqrt{\nu_i}$ = part importante de la sampling error =\> influential unit =\> obj : réduire le poids de ses unités
+
+Nouvel estimateur : $\hat{T}_y^{RC} = \sum_{i \in s} y_i + \sum_{i \in U-s} x'_i \hat{\beta}^R + \sum_{i \in s} {u_i \over h_i} \psi(h_i \frac{y_i - x'_i\hat{\beta}^R)}{\sqrt{\nu_i}}$
+
+with : $h_i$ weight allowed to depend on both $x_i$ and $d_i$, \$\\psi(t) = t\$ bounded function with \$\\psi (0) = 0\$ and \$\\psi(t= \\approx t\$ when t close to 0. If = for every value of t, \$\\hat{T}\_y\^{RC}\$ reduces the nonrobust calibration estimator
+
+--\> propriété de cet estimateur : census-consistent (no matter the choice of $h_i$ or $\psi(.)$, it reduces to \$T_y\$ if census (s = U or $w_i = 1, \forall i \in U$)
+
+Autre façon d'écrire l'estimateur : skipped (mais lien avec article de Duchesne si bon choix de la huber fonction + ça permet de passer à une type II Winsorization (= two-sided type I Winsorization)
+
+--\> alternatives de l'estimateur ;
+
+-   Lee (1991), in \$\\hat{T}\_y\^C\$, multiply the residual component by \$\\theta \\in [0,1]\$
+
+<!-- -->
+
+-   différents choix de $h_i$ dans la litterature : 1 (Chambers, 1986, 1977), $h_i \propto \sqrt{\nu_i}$ (Gwet and Rivest, 1992), \$h_i = w_i \sqrt{\nu_i}\$ or \$h_i = d_i \\sqrt{\\nu_i}\$ ; \$h_i = u_i = (w_i -1) \\sqrt{\\nu_i}\$
+
+--\> construction of \$\\hat{\\beta}\^R\$ :
+
+-   model-based (relationship between x and y) : should be outlier resistan, high efficiency when model errors are normally distributed then \$\\sum\_{i \\in U - s} x'\_i \\hat{\\beta}\^R\$ little affected by outliers (but substantial bias –\> role of the third term = decrease the bias : $\psi$ brings outliers in the estimation of \$T_y\$)
+
+=\> on espèce compensation entre l'augmentation de la variance et la réduction du biais
+
+-   dans l'autre écriture de l'estimateur (que je n'ai pas réécrit mais (7) dans l'article) : il existe une equation U pour estimer $\beta$ avec \$U(\\beta) = 0\$
+
+    --\> on peut résoudre la dernière équation grâce à GM et on a \$\\hat{T}*y\^{RC} = T'*X \\hat{\\beta}{GM}\$ –\> outlier treatment thanks to the tuning of c de la fonction Huber \$\\psi\$
+
+--\> comparaison entre winsorization et cet estimateur
+
+Winsorization = one-sided Huber function \$\\psi(t) = min(t,R)\$
+
+Stratified sampling design : sous plusieurs conditions (voir p.15, partie 4.2, §2 pour le détail) : $\hat{T}_y^{RC}  = \hat{T}_{yR}$ = winsorized estimator with cutoff $R_h = \hat{\mu}_h + R \frac{f_h}{1 - f_h}$
+
+HT estimator ?
+
+-   if m empty, no auxiliary variable, $\nu_i = 1,\; u_i = h_i = (1/\pi_i - 1)\text{, then }
+    \hat{T}_{yR}^{HT} = \sum_{i \in s} \left( y_i + \min\!\big((1/\pi_i - 1)y_i,\, R\big) \right)$
+
+-   if \$m = \mu\$ and $\nu_i = 1$, \$\\sum w_i = N\$ ; if $u_i = h_i = (w_i - 1)$ then robust estimator of µ obtained by estimating \$U(\\beta) = 0\$
+
+    and $\hat{T}_y^{RC} = \sum_{i \in s} w_i \hat{\mu}$
+
+-   HT weights $d_i$, sometimes implicitly calibrated to $T_X$ : true for STSRWOR, probability-propotional-to-size (pps) sampling
+
+--\> choice of the tuning constant : skipped
+
+--\> estimation of the MSE : skipped
+
+--\> implementation of \$\\hat{T}\_y\^{RC}\$
+
+Difficult because of the weights
+
+M1 : weighting approach
+
+$w_i$ replaced by $w_i^R$ robust weights : obtained with the augmented calibration equation : $\sum_{i \in s} w_i^R \begin{pmatrix} x_i \\ y_i \end{pmatrix} = \begin{pmatrix} T_X \\ \hat{T}_y^{RC} \end{pmatrix}$
+
+M2 : imputation approach
+
+modify $y_i$ (good when a lot of y) : on peut réécrire $\hat{T}_y^{RC} = \sum_{i \in s} w_i y_{. i}$ avec (si fonction de Huber + tuning constant c)
+
+![](images/clipboard-1254235211.png)
+
+avec $s_0$ qui contient les unités qui ont été décrites comme influentes
+
+= type II summetric two-sided regression Winsorized values (estimator : winsorized regression estimator)
+
+![](images/clipboard-3575240895.png)
+
+Easier to interpret : weighted average of the robust predictions $x'_i \hat{\beta}^R$ *and the observed values* $yi$ ; less weight when the observation if highly influential
+
 ## Stratum jumpers
 
 Create a observation in not the right strata : big cities in small or medium strata
+
+```{r}
+MU284_jump <- MU284 
+index <- sample(MU284_jump[MU284_jump$strate == "haute",]$LABEL, 2)
+MU284_jump[MU284$LABEL %in% index,]$strate <- "basse" 
+MU284_jump[MU284$LABEL %in% index,]$strate_id <- "1" 
+MU284_jump$stratum_jumper <- ifelse(MU284_jump$LABEL %in% index, 1, 0)
+```
+
+```{r}
+ggplot(MU284_jump, aes(x = P75, y = P85, color = factor(strate))) + 
+  geom_point() + 
+  labs( title = "Scatter plot entre P75 et P85", x = "Population en 1975 (P75)", y = "Population en 1985 (P85)" ) + 
+  theme_minimal()
+```
+
+### Méthode 1 : winsorized
+
+### Méthode 2 : stratum jumpers
