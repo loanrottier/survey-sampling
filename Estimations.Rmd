@@ -17,20 +17,21 @@ library(tidyverse)
 library(ggplot2) 
 library(sampling) 
 library(survey)
+library(robsurvey)
 ```
 
 ### MU284
 
 ```{r}
 data(MU284) 
-?MU284
+data(MU284)
 ```
 
 Y = Population en 1985
 
 X = Population en 1975
 
-Création de strates : petites / Moyennes / Grandes villes
+Création de strates : 9 strates
 
 Stratum jumpers : Plus grande croissance que prévue, au contraire, fort déclin de la ville =\> Changement de strates
 
@@ -86,20 +87,10 @@ ggplot(MU284, aes(x = P75, y = P85, color = factor(outlier))) +
   theme_minimal()
 ```
 
-### Création des strates
-
-#### Par quantiles
+### Strates
 
 ```{r}
-MU284$strate <- cut(MU284$P75, breaks = quantile(MU284$P75, probs = c(0, 1/2, 28.5/30, 1)), include.lowest = TRUE, labels = c("basse", "moyenne", "haute"))
-MU284 <- MU284 %>% mutate(strate_id = case_when(
-  strate == "basse" ~ 1,
-  strate == "moyenne" ~ 2,
-  strate == "haute" ~ 3 ))
-```
-
-```{r}
-ggplot(MU284, aes(x = P75, y = P85, color = factor(strate))) + 
+ggplot(MU284, aes(x = P75, y = P85, color = factor(Stratum))) + 
   geom_point() + 
   labs( title = "Scatter plot entre P75 et P85", x = "Population en 1975 (P75)", y = "Population en 1985 (P85)" ) + 
   theme_minimal()
@@ -209,15 +200,7 @@ R solution de \$\\frac{R - \\mu}{n-1} = \\mathbb{E}\_F(max(Y-R,0))\$
 On estime l'espérance puis on résoud $H(R) = \frac{R - \mu}{n-1} - {1\over n} \sum_{i=1}^n max(Y-R,0)) = 0$
 
 ```{r}
-mu_pop <- mean(MU284$P85)
-n <- length(stsrswor_data)
-H_R <- function(R, mu, n, sample){
-  terme1 <- (R - mu) / (n - 1)
-  terme2 <- sum(pmax(sample - R, 0))/n
-  return(terme1 - terme2)
-}
-R_esp_max <- uniroot(f = H_R, interval = c(min(MU284$P85), max(MU284$P85)),
-                     mu = mu_pop, n = n, sample = stsrswor_data$P85)$root
+
 stsrswor_data$P85_R_esp_max <- min(stsrswor_data$P85, R_esp_max)
 ```
 

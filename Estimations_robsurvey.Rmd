@@ -293,6 +293,10 @@ svytotal_k_winsorized(~P85, ech.stsi, k = 2)
 ```
 
 ```{r}
+svytotal_k_winsorized(~P85, ech.stsi, k = 2)
+```
+
+```{r}
 totals_k_winso <- numeric(15)
 for (k in 1:15){
   totals_k_winso[k] <- coef(svytotal_k_winsorized(~P85, ech.stsi, k = k))
@@ -563,10 +567,12 @@ Easier to interpret : weighted average of the robust predictions $x'_i \hat{\bet
 Create a observation in not the right strata : big cities in small or medium strata
 
 ```{r}
+nb_stratum_jumpers <- 1
 MU284_jump <- MU284 
-index <- sample(MU284_jump[MU284_jump$strate == "haute",]$LABEL, 2)
+index <- sample(MU284_jump[MU284_jump$strate == "haute",]$LABEL, nb_stratum_jumpers)
 MU284_jump[MU284$LABEL %in% index,]$strate <- "basse" 
 MU284_jump[MU284$LABEL %in% index,]$strate_id <- "1" 
+MU284_jump[MU284$LABEL %in% index,]$P75 <- 13
 MU284_jump$stratum_jumper <- ifelse(MU284_jump$LABEL %in% index, 1, 0)
 ```
 
@@ -580,3 +586,116 @@ ggplot(MU284_jump, aes(x = P75, y = P85, color = factor(strate))) +
 ### Méthode 1 : winsorized
 
 ### Méthode 2 : stratum jumpers
+
+```{r}
+N_H <- table(MU284_jump$strate)
+# calcul n_h
+n <- 70 #choix de n
+table(MU284_jump$strate) 
+std <- c() 
+for (i in 1:3){ 
+  std[i] <- sqrt(var(MU284_jump$P85[MU284_jump$strate_id == i])) 
+  } 
+tab <- table(MU284_jump$strate)*std 
+sum_NL <- sum(tab) 
+n_H <- n * tab / sum_NL 
+round(n_H) #pas ok car n_3 = 26 > N_3 = 13
+```
+
+$n_3 > N_3$
+
+```{r}
+n_3 <- table(MU284_jump$strate)['haute'] 
+n_12 <- n - n_3
+tab <- table(MU284_jump$strate)[1:2] * std[1:2] 
+sum_NL <- sum(tab) 
+n_H <- n_12 * tab / sum_NL 
+n_H['haute'] <- n_3 
+n_H <- round(n_H)
+n_H
+```
+
+```{r}
+set.seed(12)
+ech1 <- sample(1:nrow(MU284_jump[MU284_jump$strate=="basse",]), size = n_H["basse"])
+ech2 <- sample(1:nrow(MU284_jump[MU284_jump$strate=="moyenne",]), size = n_H["moyenne"])
+ech3 <- sample(1:nrow(MU284_jump[MU284_jump$strate=="haute",]), size = n_H["haute"])
+sample1 <- MU284_jump[MU284_jump$strate=="basse",]
+sample1 <- sample1[ech1,]
+sample1 <- sample1[1:nrow(sample1)-nb_stratum_jumpers,]
+sample1 <- rbind(sample1, MU284_jump[MU284_jump$stratum_jumper == 1,])
+sample2 <- MU284_jump[MU284_jump$strate=="moyenne",]
+sample2 <- sample2[ech2,]
+sample3 <- MU284_jump[MU284_jump$strate=="haute",]
+sample3 <- sample3[ech3,]
+stsrswor_data_jump <- rbind(sample1, sample2, sample3) 
+```
+
+Weights
+
+```{r}
+w1 <- nrow(MU284_jump[MU284_jump$strate == "basse",]) / nrow(stsrswor_data_jump[stsrswor_data_jump$strate == "basse",])
+w2 <- nrow(MU284_jump[MU284_jump$strate == "moyenne",]) / nrow(stsrswor_data_jump[stsrswor_data_jump$strate == "moyenne",])
+w3 <- nrow(MU284_jump[MU284_jump$strate == "haute",]) / nrow(stsrswor_data_jump[stsrswor_data_jump$strate == "haute",])
+```
+
+```{r}
+poids_stsi=c(rep(w1,n_H[1]),rep(w2,n_H[2]),rep(w3,n_H[3]))
+stsrswor_data_jump$poids <- poids_stsi
+ech.stsi=svydesign(id=~LABEL,strata=~strate,weights=poids_stsi, fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])), data=stsrswor_data_jump) 
+```
+
+```{r}
+sum(MU284_jump$P85)
+```
+
+The stratum jumpers have a higher rate than they should.
+
+```{r}
+svytotal(~P85, ech.stsi)
+```
+
+Changing the weights
+
+Solution 1 : putting the weight they should have
+
+```{r}
+stsrswor_data_jump$poids_corrige <- poids_stsi
+stsrswor_data_jump[stsrswor_data_jump$stratum_jumper == 1,]$poids_corrige <- w3
+ech.corrige=svydesign(id=~LABEL,strata=~strate,weights=~poids_corrige, fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])), data=stsrswor_data_jump) 
+svytotal(~P85, ech.corrige)
+```
+
+Solution 2 : faire la moyenne des poids
+
+```{r}
+stsrswor_data_jump$collection_stratum <- stsrswor_data_jump$strate
+stsrswor_data_jump[stsrswor_data_jump$stratum_jumper == 1,]$collection_stratum <- "haute"
+moyennes <- stsrswor_data_jump %>%
+  group_by(collection_stratum) %>%
+  summarise(poids_moyen = mean(poids)) %>%
+  ungroup()
+stsrswor_data_jump <- stsrswor_data_jump %>%
+  left_join(moyennes, by = "collection_stratum")
+```
+
+```{r}
+ech.moyenne=svydesign(id=~LABEL,strata=~strate,weights=~poids_moyen, fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])), data=stsrswor_data_jump) 
+svytotal(~P85, ech.moyenne)
+```
+
+Solution 3 : poids moyen uniquement au stratum jumpers
+
+```{r}
+stsrswor_data_jump$poids_moyen_SJ <- stsrswor_data_jump$poids
+stsrswor_data_jump[stsrswor_data_jump$stratum_jumper == 1,]$poids_moyen_SJ <- stsrswor_data_jump[stsrswor_data_jump$stratum_jumper == 1,]$poids_moyen
+ratio <- sum(stsrswor_data_jump$poids_moyen) / sum(stsrswor_data_jump$poids_moyen_SJ)
+stsrswor_data_jump$poids_ratio <- stsrswor_data_jump$poids_moyen_SJ * ratio  
+```
+
+```{r}
+weighted_total(stsrswor_data_jump$P85, stsrswor_data_jump$poids)
+weighted_total(stsrswor_data_jump$P85, stsrswor_data_jump$poids_corrige)
+weighted_total(stsrswor_data_jump$P85, stsrswor_data_jump$poids_moyen)
+weighted_total(stsrswor_data_jump$P85, stsrswor_data_jump$poids_ratio)
+```
