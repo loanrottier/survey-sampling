@@ -118,12 +118,15 @@ n_12 <- n - n_3
 tab <- table(MU284$strate)[1:2]*std[1:2]
 sum_NL <- sum(tab)
 n_H <- n_12 * tab / sum_NL
-n_H[3] <- n_3 
+n_H["haute"] <- n_3 
 n_H <- round(n_H)
 n_H
-n_H[1]
+
 # sample
-stsrswor = strata(MU284,"strate",size=c(n_H[1],n_H[2],n_H[3]),method="srswor")
+size <- c(n_H)
+size
+length(unique(MU284$strate))
+stsrswor = strata(MU284,"strate",size=size,method="srswor")
 stsrswor_data = getdata(MU284,stsrswor)
 
 #y_ht

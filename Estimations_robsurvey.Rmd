@@ -1,0 +1,631 @@
+---
+title: "Estimations_robsurvey"
+author: "Loan Rottier, Simon Simus and Maelys Rapenne"
+date: "2025-11-18"
+output: html_document
+---
+
+```{r}
+library(readr) 
+library(tidyverse) 
+library(ggplot2) 
+library(sampling) 
+library(survey)
+library(robsurvey)
+
+```
+
+```{r}
+data(MU284)
+```
+
+```{r}
+Q1 <- quantile(MU284$P85, 0.25)
+Q3  <- quantile(MU284$P85, 0.75) 
+IQR <- Q3 - Q1
+lower <- Q1 - 1.5 * IQR 
+upper <- Q3 + 1.5 * IQR
+outliers <- MU284$LABEL[MU284$P85 < lower | MU284$P85 > upper]
+MU284$outlier <- ifelse(seq_len(nrow(MU284)) %in% outliers, 1, 0)
+```
+
+# Winsorization for the mean in SRSWOR
+```{r}
+
+set.seed(1)
+N <- nrow(MU284)
+n <- 70
+
+ech_index <- srswor(n, N)
+echantillon_srswor <- MU284[ech_index == 1, ]
+
+#create a vector of size n with weight N/n for all element
+poids_srswor <- rep(N/n, n)
+#create the survey design with weight 
+ech.srswor <- svydesign(id=~LABEL, weights=poids_srswor, fpc=rep(N, n), data=echantillon_srswor)
+```
+
+
+```{r}
+#real mean : 
+P85_mean_pop <- mean(MU284$P85)
+P85_mean_pop
+#Horvitz thomson estimator for the mean (with standart deviation)
+estimate_mean <- svymean(~P85, ech.srswor)
+estimate_mean
+```
+## Once-Winsorized mean
+
+There are 2 or more to compute the once-winsorized mean:
+Using the robsurvey package function svymean_k_winsorized with k = 1
+We use the 2nd biggest value as the cutoff then we cut the value of the biggest value to the cutoff (the 2nd biggest value)
+
+or we can write the formula of the once-winsorized mean:
+y_bar(1) = y_bar - (y_(n) - y_(n-1)) / n
+where y_(n) is the biggest value of the sample and y_(n-1) the 2nd biggest value of the sample
+
+
+```{r}
+P85_sample <- echantillon_srswor$P85
+y_bar <- mean(P85_sample)
+P85_sorted <- sort(P85_sample, decreasing = TRUE)
+y_n <- P85_sorted[1]       # y_(n)
+y_n_moins_1 <- P85_sorted[2] # y_(n-1)
+
+y_bar_1_manuel <- y_bar - (y_n - y_n_moins_1) / n
+y_bar_1_manuel
+```
+
+
+Winsorization by the k biggest values
+
+Replace the k biggest values of our sample (SRSWOR) by the k+1 biggest value in the sample 
+
+Try the Rivest winsorization with k = 1 by taking the takeoff as the second biggest values
+```{r}
+svymean_1_winsorized <- svymean_k_winsorized(~P85, 
+                                              ech.srswor, k = 1)
+svymean_1_winsorized
+#MSE
+mse(svymean_1_winsorized)
+```
+
+We try to find the cutoff that minimize the MSE
+
+In order to compute the MSE 
+
+
+With the Winsorization by Rivest, it's with k=1 but we can try some other value of k and see the impact on estimate mean
+
+
+```{r}
+means_k_winso <- numeric(15)
+for (k in 1:15){
+  means_k_winso[k] <- coef(svymean_k_winsorized(~P85, ech.stsi, k = k))
+}
+plot(means_k_winso, ylim = c(23,30), xlab = "Value of k", ylab = "mean")
+abline(h = P85_mean, col = "red", lwd = 2)
+```
+
+```{r}
+means_k_winso <- numeric(15)
+for (k in 1:15){
+  means_k_winso[k] <- SE(svymean_k_winsorized(~P85, ech.stsi, k = k))
+}
+plot(means_k_winso, xlab = "Value of k", ylab = "SE of the estimated means")
+abline(h = P85_mean, col = "red", lwd = 2)
+```
+
+##Winsorization with the Searl's approach : 
+
+True mean
+
+```{r}
+P85_mean <- mean(MU284$P85)
+P85_mean
+```
+
+
+Documentation
+
+Characteristic. Population mean or total. Let μ denote the estimated winsorized population mean; then, the estimated winsorized total is given by \$ \\hat{N} \\mu \$ with \$\\hat{N} = \\sum w_i\$ , where summation is over all observations in the sample.
+
+Modes of winsorization. The amount of winsorization can be specified in relative or absolute terms:
+
+-   Relative: By specifying LB and UB, the method winsorizes the LB · 100% of the smallest observations and the (1 - UB) · 100% of the largest observations from the data.
+
+-   Absolute: By specifying argument k in the functions with the "infix" *k* in their name (e.g., svymean_k_winsorized), the largest k observations are winsorized, 0 \< k \< n, where n denotes the sample size. E.g., k = 2 implies that the largest and the second largest observation are winsorized. Variance estimation. Large-sample approximation based on the influence function; see Huber and Ronchetti (2009, Chap. 3.3) and Shao (1994). Two estimators are available:
+
+    -   simple_var = FALSE Variance estimator of the winsorized mean/ total. The estimator de- pends on the estimated probability density function evaluated at the winsorization thresh- olds, which can be – depending on the context – numerically unstable. As a remedy, a simplified variance estimator is available by setting simple_var = TRUE.
+
+    -   simple_var = TRUE Variance is approximated using the variance estimator of the trimmed mean/ total.
+
+
+Optimal R
+
+R solution of \$\\frac{R - \\mu}{n-1} = \\mathbb{E}\_F(max(Y-R,0))\$
+
+On estime l'espérance puis on résoud \$H(R) = \\frac{R - \\mu}{n-1} - {1\\over n} \\sum\_{i=1}\^n max(Y-R,0)) = 0\$
+
+```{r}
+mu_pop <- mean(MU284$P85)
+n <- length(stsrswor_data)
+H_R <- function(R, mu, n, sample){
+  terme1 <- (R - mu) / (n - 1)
+  terme2 <- sum(pmax(sample - R, 0))/n
+  return(terme1 - terme2)
+}
+R_esp_max <- uniroot(f = H_R, interval = c(min(MU284$P85), max(MU284$P85)),
+                     mu = mu_pop, n = n, sample = stsrswor_data$P85)$root
+R_esp_max
+```
+
+find R
+
+```{r}
+MU284 %>% arrange(desc(P85)) %>% select(P85)
+```
+
+2 are superior than R so k = 2
+
+However the ratio R depend about the empirical distribution and then on the data (and possible outliers)
+
+
+Then we will try the approach of Searl. The cutoff is based on a quantile. The difficulty is to find the best quantile. We will try some quantile and keep the quantile with the lowest MSE. 
+
+```{r}
+quantiles <- seq(0.9, 0.99, by = 0.01)
+mse_values <- numeric(length(quantiles))
+for (i in seq_along(quantiles)) {
+  UB <- quantiles[i]
+  winsorized_mean <- svymean_winsorized(~P85, ech.srswor, LB = 0, UB = UB)
+  mse_values[i] <- mse(winsorized_mean)
+}
+mse_values
+best_quantile <- quantiles[which.min(mse_values)]
+best_quantile
+```
+The best quantile seem to be the 0.98. 
+
+
+### Winsorization with MonteCarlo
+```{r}
+nsimu <- 1000
+estimations_HT <- numeric(nsimu)
+estimations_k1 <- numeric(nsimu) 
+estimations_UB_fixed <- numeric(nsimu)
+```
+For Searl's method:
+```{r}
+
+for (i in 1:nsimu) {
+  
+  ech_index <- srswor(n, N)
+  sample_si <- MU284[ech_index == 1, ]
+  
+  weight_si <- rep(N/n, n)
+  ech.si <- svydesign(id=~LABEL, weights=weight_si, fpc=rep(N, n), data=sample_si)
+  #for comparison with H-T estimator
+  mean_HT <- svymean(~P85, ech.si)
+  estimations_HT[i] <- coef(mean_HT)
+  
+  # winsorized mean with k = 1
+  mean_k1 <- svymean_k_winsorized(~P85, ech.si, k = 1)
+  estimations_k1[i] <- coef(mean_k1) 
+  
+  # Compute the mean with searl's fixed UB 
+  mean_UB_fixed <- svymean_winsorized(~P85, ech.si, LB = 0, UB = 0.97)
+  estimations_UB_fixed[i] <- coef(mean_UB_fixed) 
+  
+}
+
+
+```
+then compute the bias, variance and MSE for both methods
+```{r}
+cat("with rivest method (k=1)")
+
+bias_k1 <- mean(estimations_k1) - P85_mean_pop
+var_k1 <- var(estimations_k1)
+mse_k1 <- bias_k1^2 + var_k1
+bias_k1
+var_k1
+mse_k1
+
+cat("with searl method (fixed UB)")
+
+bias_UB_fixed <- mean(estimations_UB_fixed) - P85_mean_pop
+var_UB_fixed <- var(estimations_UB_fixed)
+mse_UB_fixed <- bias_UB_fixed^2 + var_UB_fixed
+bias_UB_fixed
+var_UB_fixed
+mse_UB_fixed
+
+cat("comparison with Horvitz-Thomson estimator")
+bias_HT <- mean(estimations_HT) - P85_mean_pop
+var_HT <- var(estimations_HT)
+mse_HT <- bias_HT^2 + var_HT
+bias_HT
+var_HT
+mse_HT
+```
+The H-T have a small biais because we don't 
+we can see that with rivest's and searl's method we have a bias
+but the variance and mse are lower than the H-T estimator
+
+
+
+# Create Stratum
+
+```{r}
+MU284$strate <- cut(MU284$P75, breaks = quantile(MU284$P75, probs = c(0, 1/2, 28.5/30, 1)), include.lowest = TRUE, labels = c("basse", "moyenne", "haute"))
+MU284 <- MU284 %>% mutate(strate_id = case_when(
+  strate == "basse" ~ 1,
+  strate == "moyenne" ~ 2,
+  strate == "haute" ~ 3 ))
+```
+
+```{r}
+ggplot(MU284, aes(x = P75, y = P85, color = factor(strate))) + 
+  geom_point() + 
+  labs( title = "Scatter plot entre P75 et P85", x = "Population en 1975 (P75)", y = "Population en 1985 (P85)" ) + 
+  theme_minimal()
+```
+
+## Compute the neyman allocation
+
+```{r}
+N_H <- table(MU284$strate)
+n <- 70 
+table(MU284$strate) 
+std <- c() 
+for (i in 1:3){ 
+  std[i] <- sqrt(var(MU284$P85[MU284$strate_id == i])) 
+  } 
+tab <- table(MU284$strate)*std 
+sum_NL <- sum(tab) 
+n_H <- n * tab / sum_NL 
+round(n_H) #pas ok car n_3 = 34 > N_3 = 15
+```
+
+we restant with fixing $n_3$.
+
+```{r}
+n_3 <- table(MU284$strate)['haute'] 
+n_12 <- n - n_3
+tab <- table(MU284$strate)[1:2] * std[1:2] 
+sum_NL <- sum(tab) 
+n_H <- n_12 * tab / sum_NL 
+n_H['haute'] <- n_3 
+n_H <- round(n_H)
+n_H
+```
+
+```{r}
+#MU284_sorted <- MU284 %>% arrange(strate)
+#sizes <- c(11, 44, 15)
+#stsrswor = strata(MU284_sorted,"strate",size=sizes,method="srswor")
+#stsrswor_data = getdata(MU284,stsrswor)
+```
+
+```{r}
+#creae sample of size nh for each stratum
+ech1 <- sample(1:nrow(MU284[MU284$strate=="basse",]), size = n_H["basse"])
+ech2 <- sample(1:nrow(MU284[MU284$strate=="moyenne",]), size = n_H["moyenne"])
+ech3 <- sample(1:nrow(MU284[MU284$strate=="haute",]), size = n_H["haute"])
+sample1 <- MU284[MU284$strate=="basse",]
+sample1 <- sample1[ech1,]
+sample2 <- MU284[MU284$strate=="moyenne",]
+sample2 <- sample2[ech2,]
+sample3 <- MU284[MU284$strate=="haute",]
+sample3 <- sample3[ech3,]
+stsrswor_data <- rbind(sample1, sample2, sample3) 
+```
+
+```{r}
+poids_stsi=c(rep(N_H[1]/n_H[1],n_H[1]),rep(N_H[2]/n_H[2],n_H[2]),rep(N_H[3]/n_H[3],n_H[3])) 
+ech.stsi=svydesign(id=~LABEL,strata=~strate,weights=poids_stsi, fpc=c(rep(N_H[1], n_H[1]), rep(N_H[2], n_H[2]), rep(N_H[3], n_H[3])), data=stsrswor_data) 
+```
+
+#  Winsorization for the total
+## Winsorization in SRSWOR: 
+
+```{r}
+
+nsimu <- 1000
+
+data(MU284)
+N <- nrow(MU284)
+n <- 70
+
+true_total <- sum(MU284$P85)
+
+results_ht <- numeric(nsimu)
+results_k1 <- numeric(nsimu)
+results_ub <- numeric(nsimu)
+
+for (i in 1:nsimu) {
+  
+  s <- srswor(n, N)
+  sample_data <- MU284[s == 1, ]
+  
+  sample_data$weights <- N / n
+  sample_data$fpc <- N
+  
+  design_obj <- svydesign(
+    id = ~1,
+    weights = ~weights,
+    fpc = ~fpc,
+    data = sample_data
+  )
+  
+  results_ht[i] <- coef(svytotal(~P85, design_obj))
+  results_k1[i] <- coef(svytotal_k_winsorized(~P85, design_obj, k = 1))
+  results_ub[i] <- coef(svytotal_winsorized(~P85, design_obj, LB = 0, UB = 0.97))
+}
+
+mse_ht <- mean((results_ht - true_total)^2)
+mse_k1 <- mean((results_k1 - true_total)^2)
+mse_ub <- mean((results_ub - true_total)^2)
+
+var_ht <- var(results_ht)
+var_k1 <- var(results_k1)
+var_ub <- var(results_ub)
+
+bias_ht <- mean(results_ht) - true_total
+bias_k1 <- mean(results_k1) - true_total
+bias_ub <- mean(results_ub) - true_total
+
+final_results <- data.frame(
+  Estimator = c("Horvitz-Thompson", "Winsorized (k=1)", "Winsorized (UB=0.95)"),
+  MSE = c(mse_ht, mse_k1, mse_ub),
+  Variance = c(var_ht, var_k1, var_ub),
+  Bias = c(bias_ht, bias_k1, bias_ub)
+)
+
+print(final_results)
+
+```
+
+
+## Winsorization with stratum for STSRSWOR : 
+we see before that with the neyman allocation,
+we find n1 =11, n2 = 44, n3 = 15
+since in the last statrum we have N3 = 15, we can't do winsorization 
+ 
+So we will realize stratification for stratum 1 and 2
+Monte carlo : 
+
+
+
+```{r}
+nsimu <- 1000 
+estimations_HT_strat <- numeric(nsimu)
+estimations_k1_strat <- numeric(nsimu)
+estimations_UB_fixed_strat <- numeric(nsimu)
+for (i in 1:nsimu) {
+  sample_si_list <- list()
+  
+  data_basse <- MU284[MU284$strate == "basse", ]
+  N_basse <- nrow(data_basse)
+  n_basse <- n_H["basse"]
+  ech_index_basse <- srswor(n_basse, N_basse)
+  sample_basse <- data_basse[ech_index_basse == 1, ]
+  
+  data_moyenne <- MU284[MU284$strate == "moyenne", ]
+  N_moyenne <- nrow(data_moyenne)
+  n_moyenne <- n_H["moyenne"]
+  ech_index_moyenne <- srswor(n_moyenne, N_moyenne)
+  sample_moyenne <- data_moyenne[ech_index_moyenne == 1, ]
+  
+  #take all values in strat haute
+  data_haute <- MU284[MU284$strate == "haute", ]
+  
+  
+  sample_si <-rbind(sample_basse, sample_moyenne, data_haute)
+  weight_si <- c(rep(N_basse/n_basse, n_basse), rep(N_moyenne/n_moyenne, n_moyenne), rep(1, n_H["haute"]))
+  ech.si <- svydesign(id=~LABEL, strata=~strate, weights=weight_si, fpc=c(rep(N_basse, n_basse), rep(N_moyenne, n_moyenne), rep(N_H["haute"], n_H["haute"])), data=sample_si)
+  
+  #for comparison with H-T estimator
+  res_ht <- svyby(~P85, ~strate, ech.si, svytotal)
+  estimations_HT_strat[i] <- sum(res_ht$P85)
+  
+
+  # winsorized total with k = 1 in each stratum
+  res_k1 <- svyby(~P85, ~strate, ech.si, svytotal_k_winsorized, k = 5)
+  total_k1_mixte <- res_k1$P85[res_k1$strate == "basse"] + 
+                    res_k1$P85[res_k1$strate == "moyenne"] + 
+                    res_ht$P85[res_ht$strate == "haute"]
+  
+  estimations_k1_strat[i] <- total_k1_mixte
+  
+  # Compute the total with searl's fixed UB
+  res_ub <- svyby(~P85, ~strate, ech.si, svytotal_winsorized, LB = 0, UB = 0.8)
+  total_ub_mixte <- res_ub$P85[res_ub$strate == "basse"] + 
+                    res_ub$P85[res_ub$strate == "moyenne"] + 
+                    res_ht$P85[res_ht$strate == "haute"]
+  estimations_UB_fixed_strat[i] <- total_ub_mixte
+}
+
+```
+
+
+```{r}
+
+Y_total <- sum(MU284$P85)
+Y_HT <- mean(estimations_HT_strat)
+Y_UB_fixed_total <- mean(estimations_UB_fixed_strat)
+Y_searl_total <- mean(estimations_k1_strat)
+  
+Y_total
+Y_HT
+Y_UB_fixed_total
+Y_searl_total 
+
+cat("compare mse")
+mse_ht <- mean((estimations_HT_strat - Y_total)^2)
+mse_k1 <- mean((estimations_k1_strat - Y_total)^2)
+mse_ub <- mean((estimations_UB_fixed_strat - Y_total)^2)
+
+
+mse_ht
+mse_k1
+mse_ub
+
+cat("compare bias")
+bias_ht <- mean(estimations_HT_strat) - Y_total
+bias_k1 <- mean(estimations_k1_strat) - Y_total
+bias_ub <- mean(estimations_UB_fixed_strat) - Y_total
+
+bias_ht
+bias_k1
+bias_ub
+
+cat("compare variance")
+var_ht <- var(estimations_HT_strat)
+var_k1 <- var(estimations_k1_strat)
+var_ub <- var(estimations_UB_fixed_strat)
+
+var_ht
+var_k1
+var_ub
+
+```
+We can remark that the variance and mse are higher with the winsorization methods than with the H-T estimator.
+
+It's due tu the fact that we dont have outlier in our sample. So we will add some outlier in the dataset in order to see the effect of winsorization in presence of outlier.
+
+creation of a new dataset with outlier
+## Creation of a new dataset with outliers
+```{r}
+MU284_OUTLIERS <- MU284
+
+indices_basse <- which(MU284_OUTLIERS$strate == "basse")
+
+#change the first 2 indices in strat basse and multiply it by 4 and 8
+MU284_OUTLIERS$P85[indices_basse[1]] <- MU284_OUTLIERS$P85[indices_basse[1]] * 4
+MU284_OUTLIERS$P85[indices_basse[2]] <- MU284_OUTLIERS$P85[indices_basse[2]] * 8
+
+
+indices_moyenne <- which(MU284_OUTLIERS$strate == "moyenne")
+#change the first 2 indices in strat moyenne and multiply it by 4 and 8
+MU284_OUTLIERS$P85[indices_moyenne[1]] <- MU284_OUTLIERS$P85[indices_moyenne[1]] * 5
+MU284_OUTLIERS$P85[indices_moyenne[2]] <- MU284_OUTLIERS$P85[indices_moyenne[2]] * 4
+
+
+print("see the data with outliers in comparaison without outliers")
+by(MU284_OUTLIERS$P85, MU284_OUTLIERS$strate, summary)
+```
+```{r}
+set.seed(2)
+nsimu <- 1000 
+estimations_HT_strat <- numeric(nsimu)
+estimations_k1_strat <- numeric(nsimu)
+estimations_UB_fixed_strat <- numeric(nsimu)
+for (i in 1:nsimu) {
+  sample_si_list <- list()
+  
+  data_basse <- MU284_OUTLIERS[MU284_OUTLIERS$strate == "basse", ]
+  N_basse <- nrow(data_basse)
+  n_basse <- n_H["basse"]
+  ech_index_basse <- srswor(n_basse, N_basse)
+  sample_basse <- data_basse[ech_index_basse == 1, ]
+  
+  data_moyenne <- MU284_OUTLIERS[MU284_OUTLIERS$strate == "moyenne", ]
+  N_moyenne <- nrow(data_moyenne)
+  n_moyenne <- n_H["moyenne"]
+  ech_index_moyenne <- srswor(n_moyenne, N_moyenne)
+  sample_moyenne <- data_moyenne[ech_index_moyenne == 1, ]
+  
+  #take all values in strat haute
+  data_haute <- MU284_OUTLIERS[MU284_OUTLIERS$strate == "haute", ]
+  
+  
+  sample_si <-rbind(sample_basse, sample_moyenne, data_haute)
+  weight_si <- c(rep(N_basse/n_basse, n_basse), rep(N_moyenne/n_moyenne, n_moyenne), rep(1, n_H["haute"]))
+  ech.si <- svydesign(id=~LABEL, strata=~strate, weights=weight_si, fpc=c(rep(N_basse, n_basse), rep(N_moyenne, n_moyenne), rep(N_H["haute"], n_H["haute"])), data=sample_si)
+  
+  #for comparison with H-T estimator
+  res_ht <- svyby(~P85, ~strate, ech.si, svytotal)
+  estimations_HT_strat[i] <- sum(res_ht$P85)
+  
+
+  # winsorized total with k = 1 in each stratum
+  res_k1 <- svyby(~P85, ~strate, ech.si, svytotal_k_winsorized, k = 1)
+  total_k1_mixte <- res_k1$P85[res_k1$strate == "basse"] + 
+                    res_k1$P85[res_k1$strate == "moyenne"] + 
+                    res_ht$P85[res_ht$strate == "haute"]
+  
+  estimations_k1_strat[i] <- total_k1_mixte
+  
+  # Compute the total with searl's fixed UB
+  res_ub <- svyby(~P85, ~strate, ech.si, svytotal_winsorized, LB = 0, UB = 0.9)
+  total_ub_mixte <- res_ub$P85[res_ub$strate == "basse"] + 
+                    res_ub$P85[res_ub$strate == "moyenne"] + 
+                    res_ht$P85[res_ht$strate == "haute"]
+  estimations_UB_fixed_strat[i] <- total_ub_mixte
+}
+```
+
+
+```{r}
+
+Y_total <- sum(MU284_OUTLIERS$P85)
+Y_HT <- mean(estimations_HT_strat)
+Y_UB_fixed_total <- mean(estimations_UB_fixed_strat)
+Y_searl_total <- mean(estimations_k1_strat)
+  
+Y_total
+Y_HT
+Y_UB_fixed_total
+Y_searl_total 
+
+
+
+cat("compare bias")
+bias_ht <- mean(estimations_HT_strat) - Y_total
+bias_k1 <- mean(estimations_k1_strat) - Y_total
+bias_ub <- mean(estimations_UB_fixed_strat) - Y_total
+
+bias_ht
+bias_k1
+bias_ub
+
+cat("compare variance")
+var_ht <- var(estimations_HT_strat)
+var_k1 <- var(estimations_k1_strat)
+var_ub <- var(estimations_UB_fixed_strat)
+
+var_ht
+var_k1
+var_ub
+
+cat("compare mse")
+mse_ht <- mean((estimations_HT_strat - Y_total)^2)
+mse_k1 <- mean((estimations_k1_strat - Y_total)^2)
+mse_ub <- mean((estimations_UB_fixed_strat - Y_total)^2)
+
+mse_ht
+mse_k1
+mse_ub
+```
+We can see that with the presence of outliers, the winsorization methods give better results than the H-T estimator in terms of variance and MSE.
+As expected, the HT-estimator has a lowest biais since the winsorization methods introduce a biais in the estimation.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
